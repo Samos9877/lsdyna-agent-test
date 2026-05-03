@@ -1,0 +1,55 @@
+# LS-DYNA solver outputs — large binary, regenerable from rig + material
+run*/
+!run*/README.md
+
+# LS-DYNA per-run binary artifacts (in case any leak outside run dirs)
+d3plot*
+d3dump*
+d3hsp
+d3thdt
+binout*
+dynain
+glstat
+matsum
+nodout
+elout
+sleout
+spcforc
+rcforc
+ncforc
+secforc
+group_file
+status.out
+messag
+solver_stdout.log
+solver_stderr.log
+
+# Mechanical / Workbench transient
+mechanical.pid
+*.mechpz
+*.wbpj.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets / local-only configs (defensive — not expected here, but standard hygiene)
+.env
+.env.local
+*.key
+*.pem
+debug.log
