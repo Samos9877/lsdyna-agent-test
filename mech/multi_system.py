@@ -258,13 +258,13 @@ def solve_in_place(wb, system_name: str = "SYS",
 
 
 def solve_all(wb, only_lsdyna: bool = True) -> list[dict]:
-    """Solve every (LS-DYNA) system in the project, in order."""
+    """Solve every (LS-DYNA) system in the project, in order (sequential)."""
     systems = list_systems(wb)
     if only_lsdyna:
         systems = [s for s in systems if s["DisplayText"].startswith("LS-DYNA")
                    or "lsdyna" in s["DisplayText"].lower()
                    or "claude_" in s["DisplayText"]]
-    print(f"[multi_system] solving {len(systems)} system(s):")
+    print(f"[multi_system] solving {len(systems)} system(s) SEQUENTIALLY:")
     for s in systems:
         print(f"  - {s['Name']} ('{s['DisplayText']}')")
 
@@ -274,6 +274,139 @@ def solve_all(wb, only_lsdyna: bool = True) -> list[dict]:
             results.append(solve_in_place(wb, s["Name"]))
         except Exception as e:
             results.append({"system": s["Name"], "error": str(e)})
+    return results
+
+
+def solve_all_parallel(wb, only_lsdyna: bool = True,
+                       max_concurrent: int | None = None,
+                       ncpu_per_solver: int = 1,
+                       memory_mb: int = 40) -> list[dict]:
+    """Solve every (LS-DYNA) system in parallel.
+
+    Phases:
+      1. Pre-stage every system's input.k via Mechanical (sequential, fast).
+      2. Launch all solver subprocesses via Popen, wait for all to finish.
+      3. Ingest results sequentially per system (sequential — Mechanical-bound).
+
+    Empirically (2026-05-03): two SMP solver processes running concurrently on
+    independent input.k files in independent dirs both achieved normal
+    termination; wall time was ~halved vs sequential. License allowed
+    concurrent checkouts (LSTC Suite Student license + Ansys license bridge).
+
+    For 1-element unit-test rigs the solver is bound by CPU & dispatcher cost,
+    so parallelism scales near-linearly until you saturate cores.
+    """
+    import subprocess
+
+    SOLVER = (
+        r"C:\Program Files\LS-DYNA Suite R16.1 Student\lsdyna"
+        r"\ls-dyna_smp_d_R16.1_180-gd50332dbe5_winx64_ifort190_sse2_studentversion.exe"
+    )
+
+    systems = list_systems(wb)
+    if only_lsdyna:
+        systems = [s for s in systems if s["DisplayText"].startswith("LS-DYNA")
+                   or "lsdyna" in s["DisplayText"].lower()
+                   or "claude_" in s["DisplayText"]]
+
+    if max_concurrent is None:
+        max_concurrent = len(systems)
+    print(f"[multi_system] solving {len(systems)} system(s) IN PARALLEL "
+          f"(max_concurrent={max_concurrent}):")
+    for s in systems:
+        print(f"  - {s['Name']} ('{s['DisplayText']}')")
+
+    import ansys.mechanical.core as pymech
+
+    def mech_for(name):
+        return pymech.connect_to_mechanical(
+            ip="localhost",
+            port=wb.start_mechanical_server(system_name=name),
+            cleanup_on_exit=False,
+        )
+
+    # ----- Phase 1: stage input.k for every system (sequential) -----
+    print("\n[parallel] phase 1/3 — staging input.k for each system...")
+    staged = []
+    for s in systems:
+        try:
+            mech = mech_for(s["Name"])
+            workdir = _read_workdir(mech)
+            input_k = _ensure_input_k(mech, workdir)
+            staged.append({
+                "system": s["Name"],
+                "display": s["DisplayText"],
+                "workdir": workdir,
+                "input_k": input_k,
+                "mech": mech,
+            })
+            print(f"  staged {s['Name']}: {input_k} ({input_k.stat().st_size} B)")
+        except Exception as e:
+            staged.append({"system": s["Name"], "stage_error": str(e)[:200]})
+
+    # ----- Phase 2: launch all solvers as Popen, wait_all -----
+    print("\n[parallel] phase 2/3 — launching solvers concurrently...")
+    import time
+    t0 = time.time()
+    procs = []
+    for entry in staged:
+        if "stage_error" in entry:
+            entry["proc"] = None
+            continue
+        p = subprocess.Popen(
+            [SOLVER,
+             f"i={entry['input_k'].name}",
+             f"ncpu={ncpu_per_solver}",
+             f"memory={memory_mb}m"],
+            cwd=str(entry["workdir"]),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        entry["proc"] = p
+        entry["t_start"] = time.time() - t0
+        print(f"  launched {entry['system']}: PID={p.pid}")
+
+    # Wait
+    print(f"\n[parallel] waiting for {sum(1 for e in staged if e.get('proc'))} solver(s)...")
+    for entry in staged:
+        if entry.get("proc") is not None:
+            stdout, stderr = entry["proc"].communicate()
+            entry["t_end"] = time.time() - t0
+            entry["normal_termination"] = "N o r m a l" in (stdout or "")[-3000:]
+            entry["returncode"] = entry["proc"].returncode
+            print(f"  {entry['system']}: t={entry['t_end']:.1f}s, "
+                  f"normal={entry['normal_termination']}, "
+                  f"exit={entry['returncode']}")
+    total_wall = time.time() - t0
+    print(f"\n[parallel] total parallel wall: {total_wall:.1f}s")
+
+    # ----- Phase 3: ingest results per system (sequential) -----
+    print("\n[parallel] phase 3/3 — ingesting results into each Mechanical...")
+    results = []
+    for entry in staged:
+        if entry.get("normal_termination"):
+            try:
+                _add_result_objects(entry["mech"])
+                summary = _result_summary(entry["mech"])
+                results.append({
+                    "system": entry["system"],
+                    "workdir": str(entry["workdir"]),
+                    "normal_termination": True,
+                    "wall_seconds": entry["t_end"],
+                    "results": summary,
+                })
+                print(f"  {entry['system']}: {len(summary)} result objects ingested")
+            except Exception as e:
+                results.append({"system": entry["system"], "ingest_error": str(e)[:200]})
+        else:
+            results.append({
+                "system": entry["system"],
+                "normal_termination": False,
+                "stage_error": entry.get("stage_error"),
+                "returncode": entry.get("returncode"),
+            })
+
+    print(f"\n[parallel] ALL DONE — total wall {total_wall:.1f}s for "
+          f"{sum(1 for r in results if r.get('normal_termination'))} normal terminations")
     return results
 
 
@@ -293,7 +426,11 @@ def main():
     p_solve = sub.add_parser("solve", help="Solve one system in-place")
     p_solve.add_argument("system")
 
-    sub.add_parser("solve-all", help="Solve every LS-DYNA system")
+    p_sa = sub.add_parser("solve-all", help="Solve every LS-DYNA system")
+    p_sa.add_argument("--parallel", action="store_true",
+                      help="Launch all solvers concurrently instead of sequential")
+    p_sa.add_argument("--max-concurrent", type=int, default=None,
+                      help="Cap concurrent solvers (default: no cap)")
 
     p_del = sub.add_parser("delete", help="Delete a system")
     p_del.add_argument("--name", required=True)
@@ -318,9 +455,12 @@ def main():
         print()
         print(json.dumps(out, indent=2))
     elif args.cmd == "solve-all":
-        all_out = solve_all(wb)
+        if args.parallel:
+            all_out = solve_all_parallel(wb, max_concurrent=args.max_concurrent)
+        else:
+            all_out = solve_all(wb)
         print()
-        print(json.dumps(all_out, indent=2))
+        print(json.dumps(all_out, indent=2, default=str))
     elif args.cmd == "delete":
         delete_system(wb, args.name)
         print(f"deleted: {args.name}")
