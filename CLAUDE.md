@@ -25,6 +25,11 @@ The project sits between three sibling LS-DYNA-related directories in the worksp
   LSTC_LICENSE       = Ansys
   ```
   These make the LS-DYNA Analysis System show up in Workbench's Toolbox and tell the LSTC license daemon to defer to the Ansys license. **Do NOT delete either install** — they are a system, not redundant.
+- **What Ansys Student bundles vs doesn't** (corrected 2026-05-03 after empirical check):
+  - ✅ Bundles: LS-DYNA Analysis System UI + Workbench Toolbox extension (`Addins/ACT/extensions/LSDYNA/`), mesh-to-keyword translator (`aisol/bin/winx64/ls_dyna3d.exe`, only ~2 MB, used by Mechanical's "Write Solver Files" — flags are `-b boco`/`-thickness`/`-scale`, NOT a solver), keyword parser/reader DLLs (`LSDYNAParser.dll`, `LSDYNAReader.dll`), Engineering Data LS-DYNA material maps.
+  - ❌ Does NOT bundle: the actual ~150 MB LS-DYNA dynamics solver executable. The original `lsdyna_solvers.xml` points at `ANSYS Student\v261\ansys\bin\winx64\lsdyna_dp.exe` etc. — that path doesn't exist (no LS-DYNA exes anywhere under `ansys/bin/winx64/`).
+  - The standalone LSTC Suite Student install is the only source of an actual solver. Hence the env-var bridge above.
+- **Version mapping**: Ansys release year (2024 R1, 2025 R1, **2026 R1**) and LS-DYNA solver release (R14, R15, **R16.1**) are different numbering systems. Mapping: 2025 R1 ↔ R15.x; 2026 R1 ↔ R16.1. Sam's installs are both R16.1 (Ansys 2026 R1's bundled LS-DYNA reference + standalone Suite R16.1 Student), so they ARE version-consistent. The `LSDYNA_2025R1_Student.zip` in Downloads is just a stale older installer file — the install on disk is R16.1 regardless of what the installer file was named.
 
 ## Python dependencies
 
@@ -160,11 +165,38 @@ mech.run_python_script('Model.AddNamedSelection()')   # visible in Sam's tree im
 
 ## Status
 
-**Proven working (2026-05-02 evening + 2026-05-03):**
+**Proven working (2026-05-02 → 2026-05-03):**
 - Stack A: MAT_001 elastic + MAT_075 EPS22-like, both normal termination, results parsed
-- Stack B: live Mechanical-via-Workbench session, Named Selection added remotely, body/material state queried
+- Stack B: live Mechanical-via-Workbench session, full GUI control via `mech.run_python_script(...)`
+- `analysis.WriteInputFile()` exports a complete Mechanical-authored `.k`
+- Mechanical's `Solution.Solve()` is BROKEN on Ansys Student (license-path issue, see mech/README.md). Workaround: run the .k headless via `lsdyna_runner.py` IN Mechanical's WorkingDir, then add result objects + EvaluateAllResults — Mechanical reads results from disk regardless of who put them there.
+- **Multi-system unit-test workflow** (`mech/multi_system.py`): duplicate an LS-DYNA system in Workbench, each duplicate gets its own Mechanical instance + WorkingDir, solve each in-place, post-process in each Mechanical. **THIS IS THE BASELINE for simple element unit tests.**
 
-**Not yet attempted:**
-- `Solution.WriteInputFile()` to export Mechanical-built model as `.k`
-- Solving from Mechanical (vs. headless)
-- Material verification loop end-to-end
+## Baseline workflow for element unit tests
+
+```
+$PY = /c/ProgramData/anaconda3/python.exe
+
+# 1. Sam: open Workbench, build LS-DYNA system 'SYS' once with the test rig
+#    geometry/mesh/BCs/material assignment. Open scripting console, type StartServer().
+
+# 2. List existing systems
+$PY -m mech.multi_system list
+
+# 3. Duplicate for each material variant (each duplicate inherits geom/mesh/BCs)
+$PY -m mech.multi_system duplicate --from SYS --display test_steel
+$PY -m mech.multi_system duplicate --from SYS --display test_eps22
+# ...
+
+# 4. (Optional) For each duplicate, change material in Engineering Data via Mechanical
+#    or via PyMechanical (body.Material = "<MatName>")
+
+# 5. Solve every system end-to-end (Mechanical WriteInputFile -> headless solver
+#    in WorkingDir -> add result objects -> EvaluateAllResults)
+$PY -m mech.multi_system solve-all
+
+# 6. View results in each system's Mechanical (Solution tree shows
+#    claude_TotalDeformation, claude_EqvStress, claude_NormalStress_Z, etc.)
+```
+
+The headless verify-loop (Stack A, `verify/verify_materials.py`) remains available for batch runs that need comparison plots, side-by-side metrics, or run-without-Mechanical iteration. Use it when you want fast headless iteration; use `multi_system` when you want visual inspection of every result.
