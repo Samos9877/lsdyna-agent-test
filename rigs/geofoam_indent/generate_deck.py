@@ -240,6 +240,10 @@ def main():
     L.append("*CONTROL_OUTPUT\n")
     L.append("$#   npopt    neecho    nrefup    iaccop     opifs    ipnint    ikedit    iflush\n")
     L.append("         1         3         0         1         0         0       100         0\n")
+    L.append("*CONTROL_HOURGLASS\n")
+    L.append("$#     ihq        qh\n")
+    L.append("         6       0.1\n")
+    L.append("$ IHQ=6 (Belytschko-Bindeman assumed-strain), QH=0.1 — the standard recipe for low-density foam under contact loading.\n")
 
     # Output requests
     L.append("*DATABASE_BINARY_D3PLOT\n")
