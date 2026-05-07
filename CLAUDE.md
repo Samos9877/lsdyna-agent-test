@@ -117,8 +117,11 @@ lsdyna-agent-test/
 │   ├── mat_075_eps22.k     ✅ Ready (EPS22-like crushable foam)
 │   ├── mat_063_crushable.k 🟡 Skeleton
 │   └── mat_077_ogden_foam.k 🟡 Skeleton
-├── verify/                 Verification-loop runner (planned)
-├── lspp/                   LS-PrePost helpers (planned)
+├── verify/                 Verification-loop runner (built)
+│   ├── verify_materials.py
+│   └── soil_post.py        Soil-specific post: p, q invariants; q-p path; dilatancy
+├── lspp/                   LS-PrePost helpers — d3plot visualization
+│   └── visualize.py        Launch LSPP on a run dir (or render headless PNG)
 ├── run01/, run02/, run03/  Past run outputs (gitignored — regenerate by running the rig)
 └── docs/                   Findings, recipes, decision log
 ```
