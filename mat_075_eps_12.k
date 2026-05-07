@@ -27,7 +27,7 @@ $HMNAME CURVES                  1212075_LCPY_12
 $HWCOLOR CURVES                   12      11
 $HMCURVE       1       1 12075_LCPY_12
 $     LCID      SIDR       SFA       SFO      OFFA      OFFO    DATTYP     LCINT
-        12                 1.0       0.3
+        12                 1.0       1.0
 $                 X                   Y
                  0.0                2.34
          0.020202707                2.34
