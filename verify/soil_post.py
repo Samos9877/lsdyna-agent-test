@@ -23,9 +23,29 @@ LS-DYNA convention: compression negative. We flip on read.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
+
+# Make stdout tolerate unicode on Windows cp1252 consoles
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+# Sanity check imports — physics-first reporting
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+from sanity import (
+    SanityReport,
+    check_node_set_fixed,
+    check_displacement_follows_curve,
+    check_value_in_range,
+    nodes_at_z,
+)
 
 
 def _load_d3plot(run_dir: Path):
@@ -130,6 +150,40 @@ def compute_soil_metrics(run_dir: Path, init_height_mm: float = 25.4) -> dict:
     p, q = stress_invariants(sxx, syy, szz, sxy, syz, szx)
     eps_a, eps_v, eps_xx, eps_yy, eps_zz, top_idx = strains_from_displacement(disp, positions[0])
 
+    # ─── Sanity checks (physics-first) ─────────────────────────────────────
+    report = SanityReport(run_label=run_dir.name)
+
+    # 1. Bottom face nodes (z near 0) should be fixed (BC: SPC at bottom)
+    bottom_idx = nodes_at_z(positions, 0.0, tol=0.01)
+    if len(bottom_idx):
+        report.add(check_node_set_fixed(
+            positions, bottom_idx,
+            name="bottom face — fixed support BC",
+            tolerance=1e-4,
+        ))
+
+    # 2. Peak stress in physically plausible range vs material yield
+    #    (We don't know yield magnitude generically; just guard against NaN/inf.)
+    s_zz_max = float(np.abs(szz).max())
+    report.add(check_value_in_range(
+        s_zz_max,
+        min_val=0.0, max_val=1e9,
+        name="|sigma_zz| peak finite",
+        units=" (stress units)",
+        fail_outside=True,
+    ))
+
+    # 3. Strain magnitudes plausible (|eps_a| < 1.0 — hard cap; foam crushable
+    #    can hit large strains but we'd want to know if axial > 100%)
+    eps_a_max = float(np.abs(eps_a).max())
+    report.add(check_value_in_range(
+        eps_a_max,
+        min_val=0.0, max_val=1.0,
+        name="|axial strain| < 100% (sanity bound)",
+        units="",
+        fail_outside=False,                # WARN, not FAIL
+    ))
+
     # Apparent modulus from initial elastic slope (states 0..2)
     if len(eps_a) >= 3 and abs(eps_a[2] - eps_a[0]) > 1e-12:
         e_apparent = float((-szz[2] + szz[0]) / (eps_a[2] - eps_a[0]))
@@ -203,6 +257,22 @@ def compute_soil_metrics(run_dir: Path, init_height_mm: float = 25.4) -> dict:
         plt.close(fig)
     except Exception as e:
         metrics["plot_error"] = str(e)[:200]
+
+    # Sanity status threaded into metrics
+    metrics["sanity"] = {
+        "all_passed": report.all_passed(),
+        "n_pass": report.pass_count(),
+        "n_warn": report.warn_count(),
+        "n_fail": report.fail_count(),
+        "summary": report.summary_line(),
+        "checks": [
+            {"name": c.name, "status": c.status, "value": c.value,
+             "tolerance": c.tolerance, "message": c.message}
+            for c in report.checks
+        ],
+    }
+    metrics["trustworthy"] = report.all_passed()
+    metrics["sanity_report_text"] = str(report)
 
     # Drop a metrics.json for downstream tools
     (post_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))

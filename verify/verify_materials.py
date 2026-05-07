@@ -128,16 +128,45 @@ def main():
     }
     (out_root / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
 
-    print("\n[verify] === SUMMARY ===")
-    print(f"  rig:                {args.rig.name}")
-    print(f"  materials run:      {summary['n_materials']}")
-    print(f"  normal terminations:{summary['n_normal_term']}")
-    print(f"  out_root:           {out_root}")
+    # ─── Per-material sanity gate (lead with FAIL/WARN, not metrics) ──────
+    print("\n[verify] === SANITY GATE ===")
+    n_trust = 0
     for r in records:
-        status = "OK" if r["normal_termination"] else "FAIL"
+        sanity = (r.get("metrics") or {}).get("sanity") or {}
+        trustworthy = (r.get("metrics") or {}).get("trustworthy", None)
+        if not r.get("normal_termination"):
+            print(f"  {r['material']:30s} [SOLVE-FAIL] (solver did not normal-terminate)")
+            continue
+        if trustworthy is None:
+            print(f"  {r['material']:30s} [NO-SANITY] (no sanity checks defined)")
+            continue
+        marker = "[TRUST]" if trustworthy else "[UNTRUST]"
+        if trustworthy:
+            n_trust += 1
+        s = sanity.get("summary", "(?)")
+        print(f"  {r['material']:30s} {marker:9s} {s}")
+        # If failed/warn, dump the failed/warned lines now
+        if not trustworthy:
+            for c in sanity.get("checks", []):
+                if c.get("status") in ("FAIL", "WARN"):
+                    print(f"        [{c['status']}] {c['name']}: {c['message']}")
+
+    print("\n[verify] === METRICS ===")
+    print(f"  rig:                  {args.rig.name}")
+    print(f"  materials run:        {summary['n_materials']}")
+    print(f"  normal terminations:  {summary['n_normal_term']}")
+    print(f"  trustworthy:          {n_trust} / {summary['n_materials']}")
+    print(f"  out_root:             {out_root}")
+    for r in records:
+        status = "OK" if r.get("normal_termination") else "FAIL"
+        trustworthy = (r.get("metrics") or {}).get("trustworthy", True)
+        trust_tag = "" if trustworthy else "  ⚠ UNTRUSTED"
         wall = r.get("wall_seconds", 0)
-        print(f"   - {r['material']:30s} {status:4s} wall={wall:.1f}s")
+        print(f"\n   - {r['material']:30s} {status:4s} wall={wall:.1f}s{trust_tag}")
+        # filter sanity sub-keys out of the printed flat metrics
         for k, v in (r.get("metrics") or {}).items():
+            if k in ("sanity", "trustworthy", "sanity_report_text"):
+                continue
             if isinstance(v, (int, float)):
                 print(f"        {k:24s} = {v:.6g}")
             else:
